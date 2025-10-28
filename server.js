@@ -1,103 +1,106 @@
+// server.js
 const express = require('express');
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
 const bodyParser = require('body-parser');
+const dotenv = require('dotenv');
 const cors = require('cors');
-const shortid = require('shortid');
+const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
+const twilio = require('twilio');
+const path = require('path');
 
+dotenv.config();
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
+// Configuración Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const twilioSid = process.env.TWILIO_SID;
-const twilioToken = process.env.TWILIO_TOKEN;
-const twilioFrom = process.env.TWILIO_FROM;
-const ownerPhone = process.env.OWNER_PHONE;
-let twilioClient = null;
-if (twilioSid && twilioToken) {
-  const twilio = require('twilio');
-  twilioClient = twilio(twilioSid, twilioToken);
+// Configuración Twilio (opcional)
+let client = null;
+if (process.env.TWILIO_SID && process.env.TWILIO_TOKEN) {
+  client = twilio(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
 }
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// Base de datos simple en memoria
+let productos = [];
+let pedidos = [];
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-const PRODUCTS_FILE = path.join(__dirname, 'products.json');
-const ORDERS_FILE = path.join(__dirname, 'orders.json');
-if (!fs.existsSync(PRODUCTS_FILE)) fs.writeFileSync(PRODUCTS_FILE, '[]');
-if (!fs.existsSync(ORDERS_FILE)) fs.writeFileSync(ORDERS_FILE, '[]');
-
+// Subida de imágenes con multer
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-const readJSON = file => JSON.parse(fs.readFileSync(file));
-const writeJSON = (file, data) => fs.writeFileSync(file, JSON.stringify(data, null, 2));
+// Rutas de productos
+const productosRouter = express.Router();
+productosRouter.get('/', (req, res) => res.json(productos));
 
-app.post('/api/products', upload.single('image'), async (req, res) => {
+productosRouter.post('/', upload.single('imagen'), async (req, res) => {
   try {
-    const { title, price, description } = req.body;
-    let imageUrl = null;
-    if (req.file) {
-      const result = await cloudinary.uploader.upload_stream({ folder: 'tienda_productos' }, (error, result) => {
-        if (error) console.error('Error Cloudinary:', error);
-        else imageUrl = result.secure_url;
-      }).end(req.file.buffer);
-    }
-    const products = readJSON(PRODUCTS_FILE);
-    const newProduct = { id: shortid.generate(), title, price: Number(price || 0), description, image: imageUrl };
-    products.push(newProduct);
-    writeJSON(PRODUCTS_FILE, products);
-    res.json({ ok: true, product: newProduct });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { resource_type: 'image' },
+      (error, result) => {
+        if (error) return res.status(500).json({ error });
+        const nuevo = {
+          id: Date.now(),
+          nombre: req.body.nombre,
+          precio: req.body.precio,
+          imagen: result.secure_url
+        };
+        productos.push(nuevo);
+        res.json(nuevo);
+      }
+    );
+    uploadStream.end(req.file.buffer);
+  } catch (err) {
+    res.status(500).json({ error: 'Error al subir producto' });
   }
 });
 
-app.get('/api/products', (req, res) => res.json(readJSON(PRODUCTS_FILE)));
+// Rutas de pedidos
+const pedidosRouter = express.Router();
+pedidosRouter.get('/', (req, res) => res.json(pedidos));
 
-app.post('/api/purchase', (req, res) => {
-  try {
-    const { productId, customerName, customerPhone, deliveryAddress, paymentMethod } = req.body;
-    if (!productId || !customerName || !customerPhone)
-      return res.status(400).json({ ok: false, error: 'Faltan datos' });
+pedidosRouter.post('/', (req, res) => {
+  const pedido = {
+    id: Date.now(),
+    cliente: req.body.cliente,
+    telefono: req.body.telefono,
+    direccion: req.body.direccion,
+    carrito: req.body.carrito
+  };
+  pedidos.push(pedido);
 
-    const products = readJSON(PRODUCTS_FILE);
-    const product = products.find(p => p.id === productId);
-    if (!product) return res.status(404).json({ ok: false, error: 'Producto no encontrado' });
-
-    const orders = readJSON(ORDERS_FILE);
-    const order = {
-      id: shortid.generate(),
-      productId,
-      productTitle: product.title,
-      customerName,
-      customerPhone,
-      deliveryAddress: deliveryAddress || '',
-      paymentMethod: paymentMethod || 'Contra entrega',
-      date: new Date().toISOString()
-    };
-    orders.push(order);
-    writeJSON(ORDERS_FILE, orders);
-
-    const msg = `Nuevo pedido: ${order.productTitle} - Cliente: ${customerName} - Tel: ${customerPhone} - Pago: ${order.paymentMethod} - Dirección: ${order.deliveryAddress}`;
-    if (twilioClient && ownerPhone && twilioFrom) {
-      twilioClient.messages.create({ body: msg, from: twilioFrom, to: ownerPhone })
-        .then(() => console.log('SMS enviado'))
-        .catch(err => console.error('Error SMS:', err));
-    } else console.log('Twilio no configurado:', msg);
-
-    res.json({ ok: true, order });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+  // Enviar SMS si Twilio está configurado
+  if (client && process.env.OWNER_PHONE) {
+    client.messages.create({
+      body: `Nuevo pedido de ${pedido.cliente} (${pedido.telefono})`,
+      from: process.env.TWILIO_FROM,
+      to: process.env.OWNER_PHONE
+    }).catch(console.error);
   }
+
+  res.json({ ok: true });
 });
 
-app.listen(PORT, () => console.log(`Servidor iniciado en http://localhost:${PORT}`));
+// Usar rutas
+app.use('/api/productos', productosRouter);
+app.use('/api/pedidos', pedidosRouter);
+
+// Panel de administración (sin contraseña)
+app.get('/panel', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'panel.html'));
+});
+
+// Página principal
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'index.html'));
+});
+
+// Iniciar servidor
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Servidor iniciado en puerto ${port}`));
