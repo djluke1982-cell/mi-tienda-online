@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Panel de Administración</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <h1>Panel de Administración</h1>
+  <form id="formProducto" enctype="multipart/form-data">
+    <input type="text" name="nombre" placeholder="Nombre del producto" required>
+    <input type="number" name="precio" placeholder="Precio" required>
+    <input type="file" name="imagen" accept="image/*" required>
+    <button type="submit">Subir producto</button>
+  </form>
+  <h2>Productos actuales</h2>
+  <ul id="lista"></ul>
+
+  <script>
+    const form = document.getElementById('formProducto');
+    const lista = document.getElementById('lista');
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const data = new FormData(form);
+      const res = await fetch('/api/productos', { method: 'POST', body: data });
+      if (res.ok) cargar();
+    });
+
+    async function cargar() {
+      const res = await fetch('/api/productos');
+      const productos = await res.json();
+      lista.innerHTML = productos.map(p => `<li><img src="${p.imagen}" width="80"> ${p.nombre} - $${p.precio}</li>`).join('');
+    }
+    cargar();
+  </script>
+</body>
+</html>
